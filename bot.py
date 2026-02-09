@@ -8,11 +8,44 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Load API keys from .env
-groq_client = Groq(api_key=os.getenv('GROQ_API_KEY'))
+API_KEYS = [
+    os.getenv('GROQ_API_KEY_1'),
+    os.getenv('GROQ_API_KEY_2'),
+    os.getenv('GROQ_API_KEY_3'),
+]
+
+# Remove None values
+API_KEYS = [k for k in API_KEYS if k]
+
+# Function to try keys until one works
+def get_groq_response(messages):
+    for api_key in API_KEYS:
+        try:
+            client = Groq(api_key=api_key)
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=messages,
+                temperature=0.8,
+                max_tokens=400
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            # If rate limit error, try next key
+            if "rate_limit" in str(e).lower():
+                continue
+            else:
+                # If other error, raise it
+                raise e
+    
+    # If all keys failed
+    return "um... sorry.. all the keys are rate limited rn\nim broke i cant afford more D:\ntry again tmrw 😭"
 
 # Load personality from file
-with open('personality.txt', 'r', encoding='utf-8') as f:
-    PERSONALITY = f.read()
+try:
+    with open('personality.txt', 'r', encoding='utf-8') as f:
+        PERSONALITY = f.read()
+except FileNotFoundError:
+    PERSONALITY = os.getenv('PERSONALITY', 'You are Elyse, a friendly chatbot.')
 
 # Set up Discord bot
 intents = discord.Intents.default()
@@ -30,8 +63,9 @@ async def on_message(message):
     if message.author == bot.user:
         return
     
-    if isinstance(message.channel, discord.DMChannel) or bot.user in message.mentions:
-        user_message = message.content.replace(f'<@{bot.user.id}>', '').strip()
+    # Respond to ALL DMs without needing @
+    if isinstance(message.channel, discord.DMChannel):
+        user_message = message.content.strip()
         
         user_id = message.author.id
         if user_id not in conversation_history:
@@ -47,17 +81,10 @@ async def on_message(message):
         
         async with message.channel.typing():
             try:
-                response = groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[
-                        {'role': 'system', 'content': PERSONALITY},
-                        *conversation_history[user_id]
-                    ],
-                    temperature=0.8,
-                    max_tokens=400
-                )
-                
-                bot_response = response.choices[0].message.content
+                bot_response = get_groq_response([
+                    {'role': 'system', 'content': PERSONALITY},
+                    *conversation_history[user_id]
+                ])
                 
                 conversation_history[user_id].append({
                     'role': 'assistant',

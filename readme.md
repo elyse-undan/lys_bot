@@ -13,4 +13,3 @@ A Discord bot with a custom personality.
 3. Create a `personality.txt` file with your custom personality prompt
 4. Install dependencies: `pip install -r requirements.txt`
 5. Run: `python bot.py`
-```

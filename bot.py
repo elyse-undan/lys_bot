@@ -34,6 +34,39 @@ rate_limit_tracker = {}  # {api_key: datetime of rate limit}
 daily_usage = {}  # {user_id: {'date': 'YYYY-MM-DD', 'count': X}}
 DAILY_LIMIT = 50  # 50 messages per person per day (doesn't apply to priority users)
 
+def save_training_example(user_message, bot_response, username="User"):
+    """
+    Save a conversation pair for training data
+    Format: JSONL (JSON Lines - one JSON object per line)
+    """
+    # Create the training example in the format models expect
+    example = {
+        "messages": [
+            {
+                "role": "user",
+                "content": user_message  # Remove username prefix for cleaner training
+            },
+            {
+                "role": "assistant", 
+                "content": bot_response
+            }
+        ]
+    }
+    
+    # Optional: Add metadata (can be useful later)
+    # example["metadata"] = {
+    #     "username": username,
+    #     "timestamp": datetime.now().isoformat(),
+    #     "channel_id": channel_id
+    # }
+    
+    # Append to JSONL file (creates file if it doesn't exist)
+    try:
+        with open('training_data.jsonl', 'a', encoding='utf-8') as f:
+            f.write(json.dumps(example, ensure_ascii=False) + '\n')
+    except Exception as e:
+        print(f"Error saving training data: {e}")
+
 # Message queue for when API is busy
 message_queue = []
 queue_processing = False
@@ -314,21 +347,10 @@ async def process_message_queue():
                     memory_context = "\n\nThings I remember from our past conversations:\n" + "\n".join(f"- {fact}" for fact in bot_memory[str(channel_id)]['facts'])
                     messages_to_send[0]['content'] += memory_context
                 
-                if channel_id not in channel_conversations:
-                    channel_conversations[channel_id] = []
-                
-                channel_conversations[channel_id].append({
-                    'role': 'user',
-                    'content': f'{username}: {user_message}'
-                })
-                
-                if len(channel_conversations[channel_id]) > 20:
-                    channel_conversations[channel_id] = channel_conversations[channel_id][-20:]
-                
                 messages_to_send.extend(channel_conversations[channel_id])
                 
                 bot_response = get_groq_response(messages_to_send)
-                
+
                 channel_conversations[channel_id].append({
                     'role': 'assistant',
                     'content': bot_response
@@ -336,9 +358,15 @@ async def process_message_queue():
                 
             except Exception as e:
                 bot_response = f"oop something broke: {e}"
-        
+
         await send_message_naturally(message.channel, bot_response)
+
+        # Save training data (filter out errors)
+        if not bot_response.startswith("oop something broke") and "sorry to break the immersion" not in bot_response:
+            save_training_example(user_message, bot_response, message.author.display_name)
+
         save_conversations()
+        save_daily_usage()
         
         # Wait between processing messages to avoid rate limits
         await asyncio.sleep(2)
@@ -439,7 +467,9 @@ async def on_message(message):
                 messages_to_send.extend(channel_conversations[channel_id])
                 
                 bot_response = get_groq_response(messages_to_send)
-                
+
+                save_training_example(user_message, bot_response, message.author.display_name)
+    
                 channel_conversations[channel_id].append({
                     'role': 'assistant',
                     'content': bot_response

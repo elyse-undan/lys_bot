@@ -3,3 +3,8 @@ personality.txt
 __pycache__/
 *.pyc
 .venv/
+# Bot data files
+training_data.jsonl
+conversations.json
+bot_memory.json
+daily_usage.json

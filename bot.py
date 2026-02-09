@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import asyncio
 from datetime import datetime, timedelta
 import json
+import re
 
 # Load environment variables
 load_dotenv()
@@ -64,21 +65,23 @@ def check_daily_limit(user_id):
     remaining = DAILY_LIMIT - user_data['count']
     return True, remaining
 
-# Function to try keys until one works
 def get_groq_response(messages, fast_mode=False):
     """
     Get response from Groq API
     fast_mode=True uses smaller/faster model for background tasks like memory extraction
     """
     model = "llama-3.1-8b-instant" if fast_mode else "llama-3.3-70b-versatile"
-    max_tokens = 200 if fast_mode else 400
+    max_tokens = 300 if fast_mode else 2048
     
     for api_key in API_KEYS:
         # Skip keys that are currently rate limited
         if api_key in rate_limit_tracker:
-            if datetime.now() - rate_limit_tracker[api_key] < timedelta(minutes=1):
+            reset_time = rate_limit_tracker[api_key]['reset_time']
+            if datetime.now() < reset_time:
                 continue
             else:
+                # It's been long enough, remove from tracker and try again
+                print(f"✓ Key should be available again")
                 del rate_limit_tracker[api_key]
         
         try:
@@ -92,29 +95,66 @@ def get_groq_response(messages, fast_mode=False):
             return response.choices[0].message.content
         except Exception as e:
             if "rate_limit" in str(e).lower():
-                rate_limit_tracker[api_key] = datetime.now()
-                print(f"Key rate limited at {datetime.now()}")
+                error_str = str(e)
+                
+                # Try to extract the "try again in X" time from error
+                wait_time_seconds = None
+                
+                # Look for pattern like "18m19.872s" or "5m30s" or "45s"
+                match = re.search(r'try again in (\d+)m([\d.]+)s', error_str)
+                if match:
+                    minutes = int(match.group(1))
+                    seconds = float(match.group(2))
+                    wait_time_seconds = (minutes * 60) + seconds
+                else:
+                    # Try pattern like "45s" or "30.5s"
+                    match = re.search(r'try again in ([\d.]+)s', error_str)
+                    if match:
+                        wait_time_seconds = float(match.group(1))
+                
+                if wait_time_seconds:
+                    reset_time = datetime.now() + timedelta(seconds=wait_time_seconds)
+                    rate_limit_tracker[api_key] = {
+                        'limited_at': datetime.now(),
+                        'reset_time': reset_time,
+                        'wait_seconds': wait_time_seconds
+                    }
+                    print(f"Key rate limited. Reset at {reset_time.strftime('%I:%M:%S %p')} ({wait_time_seconds:.0f} seconds)")
+                else:
+                    # Fallback: assume 1 hour if we can't parse
+                    reset_time = datetime.now() + timedelta(hours=1)
+                    rate_limit_tracker[api_key] = {
+                        'limited_at': datetime.now(),
+                        'reset_time': reset_time,
+                        'wait_seconds': 3600
+                    }
+                    print(f"Key rate limited (couldn't parse wait time, assuming 1 hour)")
+                
                 continue
             else:
                 raise e
     
     # If all keys failed
     if rate_limit_tracker:
-        earliest_available = min(rate_limit_tracker.values()) + timedelta(minutes=1)
-        time_until_available = earliest_available - datetime.now()
+        # Find the key that will reset soonest
+        earliest_reset = min(rate_limit_tracker.values(), key=lambda x: x['reset_time'])
+        time_until_reset = (earliest_reset['reset_time'] - datetime.now()).total_seconds()
         
-        if time_until_available.total_seconds() > 0:
-            minutes = int(time_until_available.total_seconds() // 60)
-            seconds = int(time_until_available.total_seconds() % 60)
+        if time_until_reset > 0:
+            hours = int(time_until_reset // 3600)
+            minutes = int((time_until_reset % 3600) // 60)
+            seconds = int(time_until_reset % 60)
             
-            if minutes > 0:
-                return f"um... sorry to break the immersion but you've reached the message limit 😭\nim broke i cant afford unlimited msgs D:\ntry again in like {minutes} min {seconds} sec, maybe?"
+            if hours > 0:
+                return f"um... sorry to break the immersion but you've reached the message limit 😭 im broke i cant afford unlimited msgs D: try again in like {hours}h {minutes}m, maybe?"
+            elif minutes > 0:
+                return f"um... sorry to break the immersion but you've reached the message limit 😭 im broke i cant afford unlimited msgs D: try again in like {minutes} min {seconds} sec, maybe?"
             else:
-                return f"um... sorry to break the immersion but you've reached the message limit 😭\nim broke i cant afford unlimited msgs D:\ntry again in like {seconds} seconds, maybe?"
+                return f"um... sorry to break the immersion but you've reached the message limit 😭 im broke i cant afford unlimited msgs D: try again in like {seconds} seconds, maybe?"
         else:
-            return "um... sorry to break the immersion but you've reached the message limit 😭\nim broke i cant afford unlimited msgs D:\ntry again soon?"
+            return "um... sorry to break the immersion but you've reached the message limit 😭 im broke i cant afford unlimited msgs D: try again now, should work!"
     
-    return "um... sorry to break the immersion but you've reached the message limit 😭\nim broke i cant afford unlimited msgs D:\ntry again tmrw 😭"
+    return "um... sorry to break the immersion but you've reached the message limit 😭 im broke i cant afford unlimited msgs D: try again tmrw 😭"
 
 # Load personality from file
 try:
